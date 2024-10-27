@@ -42,6 +42,8 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	fprintf(stderr, "eBPF is loaded\n");
+
 	while (1) {
 		sleep(1);
 	}

@@ -2,198 +2,181 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
-#include "main.h"
+
+#include "common.h"
+#include "chacha20.bpf.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 256 * 1024);
-	__type(key, u32);
-	__type(value, u32);
-} map_fds SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 256 * 1024);
-	__type(key, u32);
-	__type(value, u64);
-} map_buf_addrs SEC(".maps");
-
-struct chacha20_ctx {
-	u32 state[16];
-	u8 *data;
-	u32 data_sz;
+struct transfer_state {
+	u32 fd;
+	u64 offset;
+	u8 *buf;
 };
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 256 * 1024);
+	__type(key, u32);
+	__type(value, struct transfer_state);
+} map_transfer_state SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 256 * 1024);
+	__type(key, u64);
+	__type(value, u64);
+} map_fd_offset SEC(".maps");
 
 const volatile int loader_pid = 0;
 const volatile int filename_len = 0;
 const volatile char filename[MAX_FILENAME_LEN];
 
-const volatile unsigned char key[32] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const volatile unsigned char nonce[12] = "bbbbbbbbbbbb";
-const volatile unsigned int counter = 0;
-
-static inline int chacha20_block(u32 out[16], u32 const in[16])
-{
-	u32 x[16];
-
-	for (int i = 0; i < 16; ++i)
-		x[i] = in[i];
-
-	for (int i = 0; i < ROUNDS; i += 2) {
-		QR(x[0], x[4], x[8], x[12]);
-		QR(x[1], x[5], x[9], x[13]);
-		QR(x[2], x[6], x[10], x[14]);
-		QR(x[3], x[7], x[11], x[15]);
-
-		QR(x[0], x[5], x[10], x[15]);
-		QR(x[1], x[6], x[11], x[12]);
-		QR(x[2], x[7], x[8], x[13]);
-		QR(x[3], x[4], x[9], x[14]);
-	}
-
-	for (int i = 0; i < 16; ++i)
-		out[i] = x[i] + in[i];
-
-	return 0;
-}
-
-static inline void chacha20_init(u32 state[16], u8 key[32], u8 nonce[12], u32 counter)
-{
-	state[0] = 0x61707865;
-	state[1] = 0x3320646E;
-	state[2] = 0x79622D32;
-	state[3] = 0x6B206574;
-
-	for (int i = 0; i < 8; ++i)
-		state[4 + i] = ((u32 *)key)[i];
-
-	state[12] = counter;
-
-	for (int i = 0; i < 3; ++i)
-		state[13 + i] = ((u32 *)nonce)[i];
-}
-
-static int encrypt_block(u64 block_idx, struct chacha20_ctx *ctx)
-{
-	u8 buf[CHACHA20_BLOCK_SIZE];
-	u8 keystream[CHACHA20_BLOCK_SIZE];
-
-	u8 cur_block_sz = min(64, ctx->data_sz - block_idx * 64);
-
-	chacha20_block((u32 *)keystream, ctx->state);
-
-	bpf_probe_read_user(buf, cur_block_sz, ctx->data + block_idx * 64);
-
-	for (int i = 0; i < cur_block_sz; ++i)
-		buf[i] ^= keystream[i];
-
-	/* bpf_probe_write_user(ctx->data, buf, cur_block_sz); */
-	if (cur_block_sz == CHACHA20_BLOCK_SIZE) {
-		bpf_probe_write_user(ctx->data, buf, CHACHA20_BLOCK_SIZE);
-	} else {
-		/* brainrot trick to work around bpf_probe_write_user only accepting a constant size */
-		for (int i = 0; i < cur_block_sz; ++i)
-			bpf_probe_write_user(ctx->data + i, buf + i, 1);
-	}
-
-	++ctx->state[12];
-
-	return 0;
-}
-
-static inline int chacha20_docrypt_user(u8 *data, u32 size, u8 key[32], u8 nonce[12], u32 counter)
-{
-	struct chacha20_ctx ctx;
-
-	ctx.data = data;
-	ctx.data_sz = size;
-
-	u32 blocks = (ctx.data_sz + 63) >> 6;
-
-	chacha20_init(ctx.state, key, nonce, counter);
-	bpf_loop(blocks, encrypt_block, &ctx, 0);
-
-	return 0;
-}
-
 SEC("tp/syscalls/sys_enter_openat")
-int handle_openat_enter(struct trace_event_raw_sys_enter *ctx)
+int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 {
-	u32 pid = bpf_get_current_pid_tgid() >> 32;
+	u32 pid = bpf_get_current_pid_tgid();
 	if (pid == loader_pid)
 		return 0;
 
 	char cur_filename[MAX_FILENAME_LEN];
-	bpf_probe_read_user(cur_filename, filename_len, (char *)ctx->args[1]);
+	// BUG: https://github.com/iovisor/bcc/issues/3175
+	s32 retcode = bpf_probe_read_user(cur_filename, MAX_FILENAME_LEN, (char *)ctx->args[1]);
+	if (retcode < 0)
+		return 0;
 
 	for (int i = 0; i < filename_len; ++i) {
 		if (filename[i] != cur_filename[i])
 			return 0;
 	}
 
-	u32 zero = 0;
-	bpf_map_update_elem(&map_fds, &pid, &zero, BPF_ANY);
+	u64 pid_fd = (u64)pid << 32;
+	u64 zero = 0;
+
+	bpf_map_update_elem(&map_fd_offset, &pid_fd, &zero, BPF_ANY);
 
 	return 0;
 }
 
 SEC("tp/syscalls/sys_exit_openat")
-int handle_openat_exit(struct trace_event_raw_sys_exit *ctx)
+int handle_exit_openat(struct trace_event_raw_sys_exit *ctx)
 {
-	u32 pid = bpf_get_current_pid_tgid() >> 32;
-	u32 *check = bpf_map_lookup_elem(&map_fds, &pid);
-	if (!check)
+	u32 pid = bpf_get_current_pid_tgid();
+	u64 pid_fd = (u64)pid << 32;
+
+	void *exist = bpf_map_lookup_elem(&map_fd_offset, &pid_fd);
+	if (!exist)
 		return 0;
+
+	bpf_map_delete_elem(&map_fd_offset, &pid_fd);
 
 	u32 fd = ctx->ret;
 	if (fd <= 0)
 		return 0;
 
-	bpf_map_update_elem(&map_fds, &pid, &fd, BPF_ANY);
+	pid_fd |= fd;
+	u64 zero = 0;
+
+	bpf_map_update_elem(&map_fd_offset, &pid_fd, &zero, BPF_ANY);
+
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_lseek")
+int handle_enter_lseek(struct trace_event_raw_sys_enter *ctx)
+{
+	u32 pid = bpf_get_current_pid_tgid();
+	u32 fd = ctx->args[0];
+	u64 pid_fd = (u64)pid << 32 | fd;
+
+	u64 *offset = bpf_map_lookup_elem(&map_fd_offset, &pid_fd);
+	if (!offset)
+		return 0;
+
+	struct transfer_state state = { fd, 0, 0 };
+	bpf_map_update_elem(&map_transfer_state, &pid, &state, BPF_ANY);
+
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_lseek")
+int handle_exit_lseek(struct trace_event_raw_sys_exit *ctx)
+{
+	u32 pid = bpf_get_current_pid_tgid();
+	struct transfer_state *state = bpf_map_lookup_elem(&map_transfer_state, &pid);
+	if (!state)
+		return 0;
+
+	if (ctx->ret < 0)
+		return 0;
+
+	u32 current_offset = ctx->ret;
+	u64 pid_fd = (u64)pid << 32 | state->fd;
+	bpf_map_update_elem(&map_fd_offset, &pid_fd, &current_offset, BPF_EXIST);
+
+	bpf_map_delete_elem(&map_transfer_state, &pid);
 
 	return 0;
 }
 
 SEC("tp/syscalls/sys_enter_read")
-int handle_read_enter(struct trace_event_raw_sys_enter *ctx)
+int handle_enter_read(struct trace_event_raw_sys_enter *ctx)
 {
-	u32 pid = bpf_get_current_pid_tgid() >> 32;
-	u32 *pfd = bpf_map_lookup_elem(&map_fds, &pid);
-	if (!pfd)
-		return 0;
-
+	u32 pid = bpf_get_current_pid_tgid();
 	u32 fd = ctx->args[0];
-	if (*pfd != fd)
+
+	u64 pid_fd = (u64)pid << 32 | fd;
+
+	u64 *offset = bpf_map_lookup_elem(&map_fd_offset, &pid_fd);
+	if (!offset)
 		return 0;
 
-	u64 buf_addr = ctx->args[1];
-
-	bpf_map_update_elem(&map_buf_addrs, &pid, &buf_addr, BPF_ANY);
+	struct transfer_state state = { fd, *offset, (u8 *)ctx->args[1] };
+	bpf_map_update_elem(&map_transfer_state, &pid, &state, BPF_ANY);
 
 	return 0;
 }
 
 SEC("tp/syscalls/sys_exit_read")
-int handle_read_exit(struct trace_event_raw_sys_exit *ctx)
+int handle_exit_read(struct trace_event_raw_sys_exit *ctx)
 {
-	u32 pid = bpf_get_current_pid_tgid() >> 32;
-	u64 *pbuf_addr = bpf_map_lookup_elem(&map_buf_addrs, &pid);
-	if (!pbuf_addr)
+	u32 pid = bpf_get_current_pid_tgid();
+
+	struct transfer_state *state = bpf_map_lookup_elem(&map_transfer_state, &pid);
+	if (!state)
 		return 0;
 
-	u32 count = ctx->ret;
-	if (count <= 0)
-		return 0;
+	u32 bytes_read = ctx->ret;
+	if (bytes_read <= 0)
+		goto cleanup;
 
-	u32 *pfd = bpf_map_lookup_elem(&map_fds, &pid);
-	if (!pfd)
-		return 0;
+	// BUG: incorrect right shift when working with a map reference?
+	// u32 counter = (state->offset + 63) >> 6;
+	u32 counter = state->offset;
+	counter >>= 6;
 
-	bpf_printk("[exit read] pid: %d, fd: %d, buf_addr: %llx, count: %d, data: %s", pid, *pfd,
-		   *pbuf_addr, count, *pbuf_addr);
-	chacha20_docrypt_user((u8 *)*pbuf_addr, count, (u8 *)key, (u8 *)nonce, counter);
+	u8 skip = state->offset % 64;
+	chacha20_docrypt_user(state->buf, bytes_read, (u8 *)key, (u8 *)nonce, counter, skip);
+
+	state->offset += bytes_read;
+
+	u64 pid_fd = (u64)pid << 32 | state->fd;
+	bpf_map_update_elem(&map_fd_offset, &pid_fd, &state->offset, BPF_EXIST);
+
+cleanup:
+	bpf_map_delete_elem(&map_transfer_state, &pid);
+
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_close")
+int handle_enter_close(struct trace_event_raw_sys_enter *ctx)
+{
+	u32 pid = bpf_get_current_pid_tgid();
+	u32 fd = ctx->args[0];
+	u64 pid_fd = (u64)pid << 32 | fd;
+
+	bpf_map_delete_elem(&map_fd_offset, &pid_fd);
 
 	return 0;
 }
