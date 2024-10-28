@@ -110,7 +110,7 @@ int handle_exit_lseek(struct trace_event_raw_sys_exit *ctx)
 	if (ctx->ret < 0)
 		return 0;
 
-	u32 current_offset = ctx->ret;
+	u64 current_offset = ctx->ret;
 	u64 pid_fd = (u64)pid << 32 | state->fd;
 	bpf_map_update_elem(&map_fd_offset, &pid_fd, &current_offset, BPF_EXIST);
 
@@ -150,11 +150,7 @@ int handle_exit_read(struct trace_event_raw_sys_exit *ctx)
 	if (bytes_read <= 0)
 		goto cleanup;
 
-	// BUG: incorrect right shift when working with a map reference?
-	// u32 counter = (state->offset + 63) >> 6;
-	u32 counter = state->offset;
-	counter >>= 6;
-
+	u32 counter = (state->offset + 63) >> 6;
 	u8 skip = state->offset % 64;
 	chacha20_docrypt_user(state->buf, bytes_read, (u8 *)key, (u8 *)nonce, counter, skip);
 
