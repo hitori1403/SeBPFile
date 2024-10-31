@@ -2,10 +2,10 @@
 #include <stdio.h>
 #include <assert.h>
 
-void handle_error(const char* msg)
+void handle_error(const char *msg)
 {
-    fprintf(stderr, "%s\n", msg);
-    exit(1);
+	fprintf(stderr, "%s\n", msg);
+	exit(1);
 }
 
 enum state {
@@ -438,7 +438,7 @@ void clean(struct parser_state *state)
 	}
 }
 
-int parse(struct parser_state* state, char *rulefile)
+int parse(struct parser_state *state, char *rulefile)
 {
 	FILE *input = fopen(rulefile, "rb");
 	int code;
@@ -495,7 +495,7 @@ int parse(struct parser_state* state, char *rulefile)
 done:
 	yaml_parser_delete(&parser);
 	fclose(input);
-    return code;
+	return code;
 }
 
 // int main()

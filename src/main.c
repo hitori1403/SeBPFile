@@ -20,8 +20,7 @@ int main(int argc, char **argv)
 	if (parser_code) {
 		fprintf(stderr, "Failed to open BPF skeleton");
 		return 1;
-	} 
-
+	}
 
 	struct main_bpf *skel;
 	int err;
