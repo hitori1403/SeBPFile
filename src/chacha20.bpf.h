@@ -14,9 +14,12 @@
 struct chacha20_ctx {
 	u32 state[16];
 	u8 *data;
-	u32 data_sz; // NOTE: original type is u64, but it exceeds the verifier's stack size limit of 512 bytes
+	u64 data_sz;
 	u8 skip;
 };
+
+unsigned char buf[CHACHA20_BLOCK_SIZE];
+unsigned char keystream[CHACHA20_BLOCK_SIZE];
 
 const volatile unsigned char key[32] = { 0 };
 const volatile unsigned char nonce[12] = { 0 };
@@ -66,9 +69,6 @@ static int encrypt_block(u32 blk_idx, struct chacha20_ctx *ctx)
 {
 	if (ctx->skip >= CHACHA20_BLOCK_SIZE)
 		return 0;
-
-	u8 buf[CHACHA20_BLOCK_SIZE];
-	u8 keystream[CHACHA20_BLOCK_SIZE];
 
 	u64 len_to_cur_blk = blk_idx * CHACHA20_BLOCK_SIZE;
 	if (ctx->data_sz <= len_to_cur_blk)

@@ -12,6 +12,7 @@ struct transfer_state {
 	u32 fd;
 	u64 offset;
 	u8 *buf;
+	u32 buf_sz;
 };
 
 struct {
@@ -155,6 +156,60 @@ int handle_exit_read(struct trace_event_raw_sys_exit *ctx)
 	chacha20_docrypt_user(state->buf, bytes_read, (u8 *)key, (u8 *)nonce, counter, skip);
 
 	state->offset += bytes_read;
+
+	u64 pid_fd = (u64)pid << 32 | state->fd;
+	bpf_map_update_elem(&map_fd_offset, &pid_fd, &state->offset, BPF_EXIST);
+
+cleanup:
+	bpf_map_delete_elem(&map_transfer_state, &pid);
+
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_write")
+int handle_enter_write(struct trace_event_raw_sys_enter *ctx)
+{
+	u32 pid = bpf_get_current_pid_tgid();
+	u32 fd = ctx->args[0];
+
+	u64 pid_fd = (u64)pid << 32 | fd;
+
+	u64 *offset = bpf_map_lookup_elem(&map_fd_offset, &pid_fd);
+	if (!offset)
+		return 0;
+
+	u32 count = ctx->args[2];
+	if (count <= 0)
+		return 0;
+
+	struct transfer_state state = { fd, *offset, (u8 *)ctx->args[1], count };
+	bpf_map_update_elem(&map_transfer_state, &pid, &state, BPF_ANY);
+
+	u32 counter = (state.offset + 63) >> 6;
+	u8 skip = state.offset % 64;
+	chacha20_docrypt_user(state.buf, count, (u8 *)key, (u8 *)nonce, counter, skip);
+
+	return 0;
+}
+
+SEC("tp/syscalls/sys_exit_write")
+int handle_exit_write(struct trace_event_raw_sys_exit *ctx)
+{
+	u32 pid = bpf_get_current_pid_tgid();
+
+	struct transfer_state *state = bpf_map_lookup_elem(&map_transfer_state, &pid);
+	if (!state)
+		return 0;
+
+	u32 bytes_written = ctx->ret;
+	if (bytes_written <= 0)
+		goto cleanup;
+
+	u32 counter = (state->offset + 63) >> 6;
+	u8 skip = state->offset % 64;
+	chacha20_docrypt_user(state->buf, state->buf_sz, (u8 *)key, (u8 *)nonce, counter, skip);
+
+	state->offset += bytes_written;
 
 	u64 pid_fd = (u64)pid << 32 | state->fd;
 	bpf_map_update_elem(&map_fd_offset, &pid_fd, &state->offset, BPF_EXIST);
