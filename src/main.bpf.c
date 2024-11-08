@@ -2,9 +2,9 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include <linux/limits.h>
 
-#include "common.h"
-#include "chacha20.bpf.h"
+#include "chacha20.bpf.c"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -31,7 +31,9 @@ struct {
 
 const volatile int loader_pid = 0;
 const volatile int filename_len = 0;
-const volatile char filename[MAX_FILENAME_LEN];
+const volatile char filename[PATH_MAX];
+
+char path_buf[PATH_MAX];
 
 SEC("tp/syscalls/sys_enter_openat")
 int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
@@ -40,14 +42,13 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 	if (pid == loader_pid)
 		return 0;
 
-	char cur_filename[MAX_FILENAME_LEN];
 	// BUG: https://github.com/iovisor/bcc/issues/3175
-	s32 retcode = bpf_probe_read_user(cur_filename, MAX_FILENAME_LEN, (char *)ctx->args[1]);
+	s32 retcode = bpf_probe_read_user_str(path_buf, PATH_MAX, (char *)ctx->args[1]);
 	if (retcode < 0)
 		return 0;
 
 	for (int i = 0; i < filename_len; ++i) {
-		if (filename[i] != cur_filename[i])
+		if (filename[i] != path_buf[i])
 			return 0;
 	}
 
