@@ -1,12 +1,12 @@
 #include <stdio.h>
-#include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <bpf/libbpf.h>
-#include "yaml_parser.c"
+
+#include "rules_loader.c"
+
 #include "main.skel.h"
 
-const char target_filename[] = "/tmp/bocchi";
+const char RULES_FILE_PATH[] = "rules.yml";
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
@@ -15,13 +15,6 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 
 int main(int argc, char **argv)
 {
-	struct parser_state state;
-	int parser_code = parse(&state, "rules.yaml");
-	if (parser_code) {
-		fprintf(stderr, "Failed to open BPF skeleton");
-		return 1;
-	}
-
 	struct main_bpf *skel;
 	int err;
 
@@ -35,14 +28,13 @@ int main(int argc, char **argv)
 
 	skel->rodata->loader_pid = getpid();
 
-	strcpy(skel->rodata->filename, target_filename);
-	skel->rodata->filename_len = strlen(target_filename);
-
 	err = main_bpf__load(skel);
 	if (err) {
 		fprintf(stderr, "Failed to load BPF skeleton");
 		goto cleanup;
 	}
+
+	load_rules_to_bpf_map(skel, RULES_FILE_PATH);
 
 	err = main_bpf__attach(skel);
 	if (err) {

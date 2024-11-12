@@ -5,8 +5,12 @@
 #include <linux/limits.h>
 
 #include "chacha20.bpf.c"
+#include "fnv1a.c"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
+
+#define MAX_ENTRIES	       1024
+#define MAX_PROCESSES_PER_FILE 128
 
 struct transfer_state {
 	u32 fd;
@@ -17,23 +21,62 @@ struct transfer_state {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 256 * 1024);
+	__uint(max_entries, MAX_ENTRIES);
 	__type(key, u32);
 	__type(value, struct transfer_state);
 } map_transfer_state SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 256 * 1024);
+	__uint(max_entries, MAX_ENTRIES);
 	__type(key, u64);
 	__type(value, u64);
 } map_fd_offset SEC(".maps");
 
+struct proc_info {
+	u32 uid;
+	u32 pid;
+	u32 ppid;
+	const char cwd[PATH_MAX];
+	const char path[PATH_MAX];
+	u8 perm;
+	u8 log;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_ENTRIES);
+	__type(key, u64); // TODO: u128
+	__type(value, struct proc_info[MAX_PROCESSES_PER_FILE]);
+} map_path_rules SEC(".maps");
+
 const volatile int loader_pid = 0;
-const volatile int filename_len = 0;
-const volatile char filename[PATH_MAX];
 
 char path_buf[PATH_MAX];
+
+struct cb_pathcmp_ctx {
+	char *s1;
+	char *s2;
+	u8 result;
+};
+
+// the equal case is sufficient
+static int cb_pathcmp(u32 i, struct cb_pathcmp_ctx *ctx)
+{
+	if (i >= PATH_MAX)
+		return 1;
+
+	if (ctx->s1[i] != ctx->s2[i]) {
+		ctx->result = 1;
+		return 1;
+	}
+
+	if (!ctx->s1[i]) {
+		ctx->result = 0;
+		return 1;
+	}
+	return 0;
+}
 
 SEC("tp/syscalls/sys_enter_openat")
 int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
@@ -47,10 +90,28 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 	if (retcode < 0)
 		return 0;
 
-	for (int i = 0; i < filename_len; ++i) {
-		if (filename[i] != path_buf[i])
-			return 0;
-	}
+	// TODO: using u128 for improved hash collision resistance
+	/* u128 etc_passwd = __u128(0x1b1181c0cded9454, 0x60a4d74db663e357); */
+
+	u64 path_hash = fnv1a_path(path_buf);
+
+	struct proc_info *proc = bpf_map_lookup_elem(&map_path_rules, &path_hash);
+	if (!proc)
+		return 0;
+
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+	// TODO: handle full path
+	const char *name =
+		(const char *)BPF_CORE_READ(task, mm, exe_file, f_path.dentry, d_name.name);
+	u32 name_len = bpf_probe_read_kernel_str(path_buf, sizeof(path_buf), name);
+
+	// TODO: handle multiple processes per file
+	struct cb_pathcmp_ctx cb_ctx = { (char *)proc->path, path_buf, 0 };
+	bpf_loop(PATH_MAX, cb_pathcmp, &cb_ctx, 0);
+
+	if (cb_ctx.result)
+		return 0;
 
 	u64 pid_fd = (u64)pid << 32;
 	u64 zero = 0;
