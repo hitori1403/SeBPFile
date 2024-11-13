@@ -547,11 +547,11 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 
 			proc[i].log = 0;
 			for (struct log_entry *l = p->log_list; l; l = l->next) {
-				if (!strcmp(l->log_type, "READ"))
+				if (!strcmp(l->log_type, "read"))
 					proc[i].log |= READ;
-				else if (!strcmp(l->log_type, "WRITE"))
+				else if (!strcmp(l->log_type, "write"))
 					proc[i].log |= WRITE;
-				else if (!strcmp(l->log_type, "OPEN"))
+				else if (!strcmp(l->log_type, "open"))
 					proc[i].log |= OPEN;
 				else {
 					fprintf(stderr, "Unknown log type: %s", l->log_type);

@@ -3,7 +3,7 @@ rules:
       - cat:
           user: paml
           log:
-            - READ
+            - read
       - cp:
           user: paml
   - /tmp/hosts:
@@ -13,8 +13,8 @@ rules:
           ppid: 1234
           cwd: /tmp/hehe
           log:
-            - READ
-            - WRITE
+            - read
+            - write
           perm: rwx
       - cp:
           user: paml
