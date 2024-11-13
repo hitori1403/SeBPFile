@@ -1,9 +1,9 @@
-rule:
+rules:
   - /etc/passwd:
       - /home/paml/.local/bin/myprocess:
           user: 1000
-          permission: none
-          logging: 
+          perm: none
+          log:
             - all
   - /etc/nginx/default.conf:
       - /usr/bin/nginx:
@@ -11,7 +11,7 @@ rule:
           pid: 123
           ppid: 1234
           cwd: /tmp/hehe
-          logging: 
+          log:
             - on_access
             - on_attempt_access
-          permission: rwx
+          perm: rwx

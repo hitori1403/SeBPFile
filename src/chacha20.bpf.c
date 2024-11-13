@@ -1,6 +1,9 @@
+#pragma once
+
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
-#include "common.h"
+
+#define min(a, b)  ((a) < (b) ? (a) : (b))
 
 #define ROTL(a, b) (((a) << (b)) | ((a) >> (32 - (b))))
 

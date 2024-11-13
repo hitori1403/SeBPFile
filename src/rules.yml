@@ -1,0 +1,20 @@
+rules:
+  - /tmp/bocchi:
+      - cat:
+          user: hitori
+          log:
+            - all
+      - cp:
+          user: hitori
+  - /tmp/hosts:
+      - tac:
+          user: root
+          pid: 123
+          ppid: 1234
+          cwd: /tmp/hehe
+          log:
+            - on_access
+            - on_attempt_access
+          perm: rwx
+      - cp:
+          user: hitori
