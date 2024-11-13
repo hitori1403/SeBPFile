@@ -51,6 +51,8 @@ enum parser_state {
 	STATE_STOP /* end state */
 };
 
+enum log_type_value { OPEN = 1, READ = 2, WRITE = 4 };
+
 struct log_entry {
 	char *log_type;
 	struct log_entry *next;
@@ -458,16 +460,16 @@ int perm_to_num(const char *perm)
 	for (const char *c = perm; *c; ++c) {
 		switch (*c) {
 		case 'r':
-			num += 4;
+			num |= 4;
 			break;
 		case 'w':
-			num += 2;
+			num |= 2;
 			break;
 		case 'x':
-			num += 1;
+			num |= 1;
 			break;
 		default:
-			fprintf(stderr, "Unkown permission: %s", perm);
+			fprintf(stderr, "Unknown permission: %s", perm);
 			exit(EXIT_FAILURE);
 		}
 	}
@@ -513,6 +515,7 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 
 	} while (state->state != STATE_STOP);
 
+	// TODO: vaidate value
 	for (struct file_entry *f = state->file_list; f; f = f->next) {
 		struct proc_info proc[128];
 		int i = 0;
@@ -542,8 +545,19 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 				proc[i].uid = pw->pw_uid;
 			}
 
-			// TODO: enum for log
 			proc[i].log = 0;
+			for (struct log_entry *l = p->log_list; l; l = l->next) {
+				if (!strcmp(l->log_type, "READ"))
+					proc[i].log |= READ;
+				else if (!strcmp(l->log_type, "WRITE"))
+					proc[i].log |= WRITE;
+				else if (!strcmp(l->log_type, "OPEN"))
+					proc[i].log |= OPEN;
+				else {
+					fprintf(stderr, "Unknown log type: %s", l->log_type);
+					exit(EXIT_FAILURE);
+				}
+			}
 
 			++i;
 		}

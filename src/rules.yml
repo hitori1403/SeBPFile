@@ -1,11 +1,11 @@
 rules:
   - /tmp/bocchi:
       - cat:
-          user: hitori
+          user: paml
           log:
-            - all
+            - READ
       - cp:
-          user: hitori
+          user: paml
   - /tmp/hosts:
       - tac:
           user: root
@@ -13,8 +13,8 @@ rules:
           ppid: 1234
           cwd: /tmp/hehe
           log:
-            - on_access
-            - on_attempt_access
+            - READ
+            - WRITE
           perm: rwx
       - cp:
-          user: hitori
+          user: paml
