@@ -95,8 +95,8 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 
 	u64 path_hash = fnv1a_path(path_buf);
 
-	struct proc_info *proc = bpf_map_lookup_elem(&map_path_rules, &path_hash);
-	if (!proc)
+	struct proc_info *procs = bpf_map_lookup_elem(&map_path_rules, &path_hash);
+	if (!procs)
 		return 0;
 
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
@@ -106,17 +106,24 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 		(const char *)BPF_CORE_READ(task, mm, exe_file, f_path.dentry, d_name.name);
 	u32 name_len = bpf_probe_read_kernel_str(path_buf, sizeof(path_buf), name);
 
-	// TODO: handle multiple processes per file
-	struct cb_pathcmp_ctx cb_ctx = { (char *)proc->path, path_buf, 0 };
-	bpf_loop(PATH_MAX, cb_pathcmp, &cb_ctx, 0);
+	for (u32 i = 0; i < MAX_PROCESSES_PER_FILE; ++i) {
+		if (!procs[i].path[0]) {
+			return 0;
+		}
 
-	if (cb_ctx.result)
+		struct cb_pathcmp_ctx cb_ctx = { (char *)procs[i].path, path_buf, 0 };
+		bpf_loop(PATH_MAX, cb_pathcmp, &cb_ctx, 0);
+
+		if (cb_ctx.result)
+			continue;
+
+		u64 pid_fd = (u64)pid << 32;
+		u64 zero = 0;
+
+		bpf_map_update_elem(&map_fd_offset, &pid_fd, &zero, BPF_ANY);
+
 		return 0;
-
-	u64 pid_fd = (u64)pid << 32;
-	u64 zero = 0;
-
-	bpf_map_update_elem(&map_fd_offset, &pid_fd, &zero, BPF_ANY);
+	}
 
 	return 0;
 }
