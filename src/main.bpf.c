@@ -109,7 +109,7 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 
 	for (u32 i = 0; i < MAX_PROCESSES_PER_FILE; ++i) {
 		if (!procs[i].path[0]) {
-			return 0;
+			break;
 		}
 
 		struct cb_pathcmp_ctx cb_ctx = { (char *)procs[i].path, path_buf, 0 };
@@ -125,6 +125,8 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 
 		return 0;
 	}
+
+	bpf_send_signal(9); // SIGKILL
 
 	return 0;
 }
