@@ -4,13 +4,14 @@
 #include <bpf/bpf_core_read.h>
 #include <linux/limits.h>
 
+#include "constants.h"
+
 #include "chacha20.bpf.c"
 #include "fnv1a.c"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-#define MAX_ENTRIES	       1024
-#define MAX_PROCESSES_PER_FILE 128
+#define MAX_ENTRIES 1024
 
 struct transfer_state {
 	u32 fd;
