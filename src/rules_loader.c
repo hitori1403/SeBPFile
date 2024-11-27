@@ -7,6 +7,7 @@
 #include <linux/limits.h>
 
 #include "types.h"
+#include "constants.h"
 #include "main.skel.h"
 
 #include "fnv1a.c"
@@ -517,7 +518,7 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 
 	// TODO: vaidate value
 	for (struct file_entry *f = state->file_list; f; f = f->next) {
-		struct proc_info proc[128];
+		struct proc_info proc[MAX_PROCESSES_PER_FILE];
 		int i = 0;
 
 		for (struct process_entry *p = f->process_list; p; p = p->next) {
