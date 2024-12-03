@@ -44,12 +44,25 @@ struct proc_info {
 	u8 log;
 };
 
+struct key_info {
+	u64 hash;
+	char key[KEY_LENGTH_MAX];
+	char nonce[KEY_LENGTH_MAX];
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, MAX_ENTRIES);
 	__type(key, u64); // TODO: u128
 	__type(value, struct proc_info[MAX_PROCESSES_PER_FILE]);
 } map_path_rules SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_ENTRIES);
+	__type(key, u64); // TODO: u128
+	__type(value, struct key_info);
+} map_keys SEC(".maps");
 
 const volatile int loader_pid = 0;
 
@@ -104,6 +117,7 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 	u64 path_hash = fnv1a_path(path_buf);
 
 	struct proc_info *procs = bpf_map_lookup_elem(&map_path_rules, &path_hash);
+
 	if (!procs)
 		return 0;
 
