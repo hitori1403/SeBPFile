@@ -3,7 +3,7 @@ rules:
       - cat:
           user: paml
           log:
-            - read
+            - open
       - cp:
           user: paml
   - /tmp/hosts:

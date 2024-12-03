@@ -44,6 +44,12 @@ struct proc_info {
 	u8 log;
 };
 
+struct key_info {
+	u64 hash;
+	char key[KEY_LENGTH_MAX];
+	char nonce[KEY_LENGTH_MAX];
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, MAX_ENTRIES);
@@ -51,9 +57,17 @@ struct {
 	__type(value, struct proc_info[MAX_PROCESSES_PER_FILE]);
 } map_path_rules SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_ENTRIES);
+	__type(key, u64); // TODO: u128
+	__type(value, struct key_info);
+} map_keys SEC(".maps");
+
 const volatile int loader_pid = 0;
 
 char path_buf[PATH_MAX];
+char tmp[PATH_MAX];
 
 struct cb_pathcmp_ctx {
 	char *s1;
@@ -79,6 +93,11 @@ static int cb_pathcmp(u32 i, struct cb_pathcmp_ctx *ctx)
 	return 0;
 }
 
+static void log(const char *file, const char *process, char *action, char *operation)
+{
+	bpf_printk("File %s - Process %s: %s on %s operation", file, process, action, operation);
+}
+
 SEC("tp/syscalls/sys_enter_openat")
 int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 {
@@ -90,6 +109,7 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 	s32 retcode = bpf_probe_read_user_str(path_buf, PATH_MAX, (char *)ctx->args[1]);
 	if (retcode < 0)
 		return 0;
+	bpf_probe_read_user_str(tmp, PATH_MAX, (char *)ctx->args[1]);
 
 	// TODO: using u128 for improved hash collision resistance
 	/* u128 etc_passwd = __u128(0x1b1181c0cded9454, 0x60a4d74db663e357); */
@@ -97,6 +117,7 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 	u64 path_hash = fnv1a_path(path_buf);
 
 	struct proc_info *procs = bpf_map_lookup_elem(&map_path_rules, &path_hash);
+
 	if (!procs)
 		return 0;
 
@@ -118,6 +139,8 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 		if (cb_ctx.result)
 			continue;
 
+		log(tmp, procs[i].path, "ALLOW", "OPEN");
+
 		u64 pid_fd = (u64)pid << 32;
 		u64 zero = 0;
 
@@ -126,6 +149,7 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 		return 0;
 	}
 
+	log(tmp, path_buf, "BLOCK", "OPEN");
 	bpf_send_signal(9); // SIGKILL
 
 	return 0;

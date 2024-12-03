@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <bpf/libbpf.h>
 #include <linux/limits.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdbool.h>
 
 #include "types.h"
 #include "constants.h"
@@ -477,8 +480,157 @@ int perm_to_num(const char *perm)
 	return num;
 }
 
+struct key_info {
+	u64 hash;
+	char key[KEY_LENGTH_MAX];
+	char nonce[KEY_LENGTH_MAX];
+};
+
+int cmp_key_info(const void *a, const void *b)
+{
+	return ((struct key_info *)a)->hash < ((struct key_info *)b)->hash ? -1 : 1;
+}
+
+unsigned int read_len(int fd, unsigned int limit)
+{
+	unsigned int len;
+	int sz = read(fd, &len, 4);
+
+	if (sz == 0)
+		return -1;
+
+	if (sz != 4) {
+		fprintf(stderr, "Invalid key\n");
+		exit(1);
+	}
+
+	if (len > limit) {
+		fprintf(stderr, "Length must be no more than 4096\n");
+		exit(1);
+	}
+
+	return len;
+}
+
+bool read_buf(int fd, char *buf, unsigned int limit)
+{
+	unsigned int len = read_len(fd, limit);
+	if (len == -1)
+		return false;
+	unsigned int sz = read(fd, buf, len);
+	if (sz < len)
+		return false;
+	buf[sz] = 0;
+	return true;
+}
+
+int load_keys(struct key_info *key_info_arr, const char *file_path)
+{
+	int fd = open(file_path, O_RDONLY), cnt = 0;
+	if (fd == -1) {
+		perror("Failed to open keys file");
+		exit(-1);
+	}
+
+	while (1) {
+		char filepath[4100];
+		char key[KEY_LENGTH_MAX];
+		char nonce[KEY_LENGTH_MAX];
+		if (!read_buf(fd, filepath, 4096))
+			break;
+
+		if (!read_buf(fd, key, 32))
+			break;
+
+		if (!read_buf(fd, nonce, 12))
+			break;
+
+		key_info_arr[cnt].hash = fnv1a((u8 *)filepath, strlen(filepath));
+		strncpy(key_info_arr[cnt].key, key, KEY_LENGTH_MAX);
+		strncpy(key_info_arr[cnt].nonce, strdup(nonce), KEY_LENGTH_MAX);
+		++cnt;
+	}
+
+	qsort(key_info_arr, cnt, sizeof(struct key_info), cmp_key_info);
+
+	if (close(fd) < 0) {
+		perror("Error: ");
+		exit(-1);
+	}
+
+	return cnt;
+}
+
+int binsearch(struct key_info *key_info_arr, unsigned int cnt, u64 path_hash)
+{
+	int l = 0, r = cnt - 1, ret = -1;
+	while (l <= r) {
+		int mid = (l + r) >> 1;
+		if (path_hash == key_info_arr[mid].hash)
+			ret = mid;
+		if (path_hash > key_info_arr[mid].hash)
+			l = mid + 1;
+		else
+			r = mid - 1;
+	}
+	return ret;
+}
+
+void gen_bytes(char *buf, unsigned int len)
+{
+	if (len < 1 || len > 48) {
+		printf("Length must be in range [1, 48]");
+		exit(1);
+	}
+
+	char cmd[20];
+	sprintf(cmd, "tpm2_getrandom %d", len);
+	FILE *fp = popen(cmd, "r");
+	if (fp == NULL) {
+		perror("popen");
+		exit(1);
+	}
+
+	fgets(buf, len + 1, fp);
+	buf[len] = 0;
+	pclose(fp);
+}
+
+void write_key(struct key_info *saved, FILE *file, char *path, unsigned int key_len,
+	       unsigned int nonce_len)
+{
+	gen_bytes(saved->key, key_len);
+	gen_bytes(saved->nonce, nonce_len);
+	unsigned int path_len = strlen(path);
+
+	fwrite(&path_len, sizeof(char), sizeof(unsigned int), file);
+	fwrite(path, sizeof(char), path_len, file);
+	fwrite(&key_len, sizeof(char), sizeof(unsigned int), file);
+	fwrite(saved->key, sizeof(char), key_len, file);
+	fwrite(&nonce_len, sizeof(char), sizeof(unsigned int), file);
+	fwrite(saved->nonce, sizeof(char), nonce_len, file);
+}
+
 int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 {
+	if (!access(KEY_FILE, F_OK) == 0) {
+		FILE *file = fopen(KEY_FILE, "w");
+		if (file == NULL) {
+			perror("Error opening key file");
+			return EXIT_FAILURE;
+			fclose(file);
+		}
+	}
+
+	struct key_info *key_info_arr = calloc(1024, sizeof(struct key_info));
+	unsigned int cnt_key = load_keys(key_info_arr, KEY_FILE);
+
+	FILE *key_file = fopen(KEY_FILE, "a+");
+	if (!key_file) {
+		perror("Faild to open keys file");
+		exit(EXIT_FAILURE);
+	}
+
 	FILE *input = fopen(file_path, "rb");
 	if (!input) {
 		perror("Failed to open rules file");
@@ -517,6 +669,7 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 	} while (state->state != STATE_STOP);
 
 	// TODO: vaidate value
+	struct key_info *new_key = (struct key_info *)calloc(1, sizeof(struct key_info));
 	for (struct file_entry *f = state->file_list; f; f = f->next) {
 		struct proc_info proc[MAX_PROCESSES_PER_FILE];
 		int i = 0;
@@ -570,16 +723,27 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 
 		// TODO: using u128 for improved hash collision resistance
 		u64 path_hash = fnv1a((u8 *)f->path, strlen(f->path));
+		unsigned int search = binsearch(key_info_arr, cnt_key, path_hash);
 
+		if (search == -1) {
+			write_key(new_key, key_file, f->path, 32, 12);
+		} else {
+			strncpy(new_key->key, key_info_arr[search].key, KEY_LENGTH_MAX);
+			strncpy(new_key->nonce, key_info_arr[search].nonce, KEY_LENGTH_MAX);
+		}
 		bpf_map__update_elem(skel->maps.map_path_rules, &path_hash, sizeof(path_hash),
 				     &proc, sizeof(proc), BPF_ANY);
+
+		bpf_map__update_elem(skel->maps.map_keys, &path_hash, sizeof(path_hash), new_key,
+				     sizeof(struct key_info), BPF_ANY);
 	}
 
 cleanup:
+	free(new_key);
 	yaml_parser_delete(&parser);
 	free(state);
+	fclose(key_file);
 	fclose(input);
-
 	if (exit_code)
 		exit(exit_code);
 
