@@ -4,22 +4,6 @@ rules:
           user: paml
           log:
             - open
-<<<<<<< Updated upstream
-=======
-      - cp:
-          user: paml
-      - /usr/bin/cat:
-          user: paml
-      - /usr/bin/cp:
-          user: paml
-  - /tmp/hosts:
-      - tac:
-          user: root
-          pid: 123
-          ppid: 1234
-          cwd: /tmp/hehe
-          log:
->>>>>>> Stashed changes
             - read
             - write
       - cp:
