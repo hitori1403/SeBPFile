@@ -4,17 +4,9 @@ rules:
           user: paml
           log:
             - open
-      - cp:
-          user: paml
-  - /tmp/hosts:
-      - tac:
-          user: root
-          pid: 123
-          ppid: 1234
-          cwd: /tmp/hehe
-          log:
             - read
             - write
-          perm: rwx
       - cp:
+          user: paml
+      - xxd:
           user: paml
