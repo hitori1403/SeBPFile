@@ -253,7 +253,6 @@ int consume_event(struct yaml_parser_state *s, yaml_event_t *event)
 		switch (event->type) {
 		case YAML_SCALAR_EVENT:
 			value = (char *)event->data.scalar.value;
-			printf("debug: %s\n", value);
 			struct process_entry *p = calloc(1, sizeof(struct process_entry));
 			p->path = strdup(value);
 			if (s->last_file->process_list == NULL)
@@ -603,7 +602,6 @@ void write_key(struct key_info *saved, FILE *file, char *path, unsigned int key_
 {
 	gen_bytes(saved->key, key_len);
 	gen_bytes(saved->nonce, nonce_len);
-	printf("%s===%s\n", saved->key, saved->nonce);
 	unsigned int path_len = strlen(path);
 	fwrite(&path_len, sizeof(char), sizeof(unsigned int), file);
 	fwrite(path, sizeof(char), path_len, file);
