@@ -5,3 +5,6 @@
 .vscode
 .output
 main
+init
+keys*
+tpm2/*

@@ -257,7 +257,7 @@ int consume_event(struct yaml_parser_state *s, yaml_event_t *event)
 			if (s->last_file->process_list == NULL)
 				s->last_file->process_list = p;
 			else
-				s->last_file->process_list->next = p;
+				s->last_file->last_process->next = p;
 			s->last_file->last_process = p;
 			s->state = STATE_PROCESS_ATTRIBUTES;
 			break;
@@ -673,7 +673,6 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 	for (struct file_entry *f = state->file_list; f; f = f->next) {
 		struct proc_info proc[MAX_PROCESSES_PER_FILE];
 		int i = 0;
-
 		for (struct process_entry *p = f->process_list; p; p = p->next) {
 			if (p->path)
 				strcpy(proc[i].path, p->path);
