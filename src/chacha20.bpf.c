@@ -24,9 +24,6 @@ struct chacha20_ctx {
 unsigned char buf[CHACHA20_BLOCK_SIZE];
 unsigned char keystream[CHACHA20_BLOCK_SIZE];
 
-const volatile unsigned char key[32] = { 0 };
-const volatile unsigned char nonce[12] = { 0 };
-
 static int chacha20_block(u32 out[16], u32 const in[16])
 {
 	u32 x[16];
