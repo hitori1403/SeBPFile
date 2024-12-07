@@ -68,7 +68,7 @@ static void chacha20_init(u32 state[16], u8 key[32], u8 nonce[12], u32 counter)
 		state[13 + i] = ((u32 *)nonce)[i];
 }
 
-static int encrypt_block(u32 blk_idx, struct chacha20_ctx *ctx)
+static int encrypt_block_cb(u32 blk_idx, struct chacha20_ctx *ctx)
 {
 	if (ctx->skip >= CHACHA20_BLOCK_SIZE)
 		return 0;
@@ -112,8 +112,7 @@ static int encrypt_block(u32 blk_idx, struct chacha20_ctx *ctx)
 	return 0;
 }
 
-static int chacha20_docrypt_user(u8 *data, u32 size, u8 key[32], u8 nonce[12], u32 counter,
-					u8 skip)
+static int chacha20_docrypt_user(u8 *data, u32 size, u8 key[32], u8 nonce[12], u32 counter, u8 skip)
 {
 	if (skip >= CHACHA20_BLOCK_SIZE)
 		return 0;
@@ -130,7 +129,7 @@ static int chacha20_docrypt_user(u8 *data, u32 size, u8 key[32], u8 nonce[12], u
 	if (skip)
 		++blocks;
 
-	bpf_loop(blocks, (void *)encrypt_block, &ctx, 0);
+	bpf_loop(blocks, (void *)encrypt_block_cb, &ctx, 0);
 
 	return 0;
 }

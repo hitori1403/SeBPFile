@@ -7,6 +7,7 @@
 #include "constants.h"
 
 #include "chacha20.bpf.c"
+#include "helpers.bpf.c"
 #include "fnv1a.c"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
@@ -44,18 +45,18 @@ struct proc_info {
 	u8 log;
 };
 
-struct key_info {
-	u64 hash;
-	unsigned char key[KEY_LENGTH_MAX];
-	unsigned char nonce[NONCE_LENGTH_MAX];
-};
-
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, MAX_ENTRIES);
 	__type(key, u64); // TODO: u128
 	__type(value, struct proc_info[MAX_PROCESSES_PER_FILE]);
 } map_path_rules SEC(".maps");
+
+struct key_info {
+	u64 hash;
+	unsigned char key[KEY_LENGTH_MAX];
+	unsigned char nonce[NONCE_LENGTH_MAX];
+};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -74,95 +75,6 @@ char proc_path[65536];
 
 int proc_path_mtx = 0;
 
-struct cb_pathcmp_ctx {
-	char *s1;
-	char *s2;
-	u8 result;
-};
-
-// the equal case is sufficient
-static int cb_pathcmp(u32 i, struct cb_pathcmp_ctx *ctx)
-{
-	if (i >= PATH_MAX)
-		return 1;
-
-	if (ctx->s1[i] != ctx->s2[i]) {
-		ctx->result = 1;
-		return 1;
-	}
-
-	if (!ctx->s1[i]) {
-		ctx->result = 0;
-		return 1;
-	}
-
-	return 0;
-}
-
-struct cb_strrev_ctx {
-	char *s;
-	u16 pos;
-	u16 len;
-};
-
-static int cb_strrev(u32 idx, struct cb_strrev_ctx *ctx)
-{
-	u16 left = ctx->pos + idx;
-	u16 right = ctx->pos + ctx->len - idx - 1;
-
-	if (left >= PATH_MAX || right >= PATH_MAX)
-		return 1;
-
-	u8 tmp = ctx->s[left];
-	ctx->s[left] = ctx->s[right];
-	ctx->s[right] = tmp;
-
-	return 0;
-}
-
-static int get_d_path(char *buf, struct task_struct *task)
-{
-	char *name;
-	u16 buf_len = 0;
-	struct dentry *dentry = BPF_CORE_READ(task, mm, exe_file, f_path.dentry);
-
-	for (u32 i = 0; i < PATH_MAX / 2; ++i) {
-		bpf_core_read(&name, sizeof(name), &dentry->d_name.name);
-
-		if (buf_len >= PATH_MAX - 1)
-			break;
-
-		u16 len = bpf_probe_read_kernel_str(&buf[buf_len], NAME_MAX, name) - 1;
-
-		if (buf_len >= PATH_MAX || buf[buf_len] == '/') {
-			buf[buf_len] = 0; // remove last slash
-			break;
-		}
-
-		struct cb_strrev_ctx cb_ctx = { buf, buf_len, len };
-		bpf_loop(len / 2, (void *)cb_strrev, &cb_ctx, 0);
-
-		buf_len += len;
-
-		if (buf_len < PATH_MAX)
-			buf[buf_len] = '/';
-
-		++buf_len;
-
-		dentry = BPF_CORE_READ(dentry, d_parent);
-	}
-
-	struct cb_strrev_ctx cb_ctx = { buf, 0, buf_len };
-	bpf_loop(buf_len / 2, (void *)cb_strrev, &cb_ctx, 0);
-
-	return buf_len;
-}
-
-static void log(const char *file, const char *process, char *action, char *operation)
-{
-	bpf_printk("File %s - Process %s: %s on %s operation", file, process, action, operation);
-}
-
 SEC("tp/syscalls/sys_enter_openat")
 int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 {
@@ -174,8 +86,8 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 		return 0;
 
 	// BUG: https://github.com/iovisor/bcc/issues/3175
-	s32 retcode = bpf_probe_read_user_str(path_buf, PATH_MAX, (char *)ctx->args[1]);
-	if (retcode < 0)
+	s32 retval = bpf_probe_read_user_str(path_buf, PATH_MAX, (char *)ctx->args[1]);
+	if (retval < 0)
 		return 0;
 
 	// TODO: using u128 for improved hash collision resistance
@@ -184,7 +96,6 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 	u64 path_hash = fnv1a_path(path_buf);
 
 	struct proc_info *procs = bpf_map_lookup_elem(&map_path_rules, &path_hash);
-
 	if (!procs)
 		return 0;
 
@@ -195,8 +106,8 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 			break;
 		}
 
-		struct cb_pathcmp_ctx cb_ctx = { (char *)procs[i].path, proc_path, 0 };
-		bpf_loop(PATH_MAX, cb_pathcmp, &cb_ctx, 0);
+		struct pathcmp_cb_ctx cb_ctx = { (char *)procs[i].path, proc_path, 0 };
+		bpf_loop(PATH_MAX, pathcmp_cb, &cb_ctx, 0);
 
 		if (cb_ctx.result)
 			continue;
@@ -238,9 +149,13 @@ int get_proc_path(struct trace_event_raw_sys_enter *ctx)
 	if (proc_path_mtx)
 		return 0;
 
+	/* NOTE: There is a race condition in the tail call from get_proc_path to handle_enter_openat.
+	 * 	The proc_path retrieved at the current time may not correspond to the intended process.
+	 * 	However, the issue is mitigated by multiple invocations, which still provide the correct path over time */
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 	get_d_path(proc_path, task);
 	proc_path_mtx = 1;
+
 	bpf_tail_call(ctx, &map_progs, 1);
 
 	return 0;
