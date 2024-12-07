@@ -47,7 +47,7 @@ struct proc_info {
 struct key_info {
 	u64 hash;
 	unsigned char key[KEY_LENGTH_MAX];
-	unsigned char nonce[KEY_LENGTH_MAX];
+	unsigned char nonce[NONCE_LENGTH_MAX];
 };
 
 struct {
