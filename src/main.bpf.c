@@ -46,8 +46,8 @@ struct proc_info {
 
 struct key_info {
 	u64 hash;
-	char key[KEY_LENGTH_MAX];
-	char nonce[KEY_LENGTH_MAX];
+	unsigned char key[KEY_LENGTH_MAX];
+	unsigned char nonce[KEY_LENGTH_MAX];
 };
 
 struct {
@@ -132,6 +132,8 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 		if (!procs[i].path[0]) {
 			break;
 		}
+
+		bpf_printk("%d - %x", i, procs[i].path[0]);
 
 		struct cb_pathcmp_ctx cb_ctx = { (char *)procs[i].path, path_buf, 0 };
 		bpf_loop(PATH_MAX, cb_pathcmp, &cb_ctx, 0);

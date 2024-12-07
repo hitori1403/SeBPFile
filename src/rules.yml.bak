@@ -1,6 +1,21 @@
 rules:
   - /etc/passwd:
-      - /home/paml/.local/bin/myprocess:
+      - process0:
+          user: 1000
+          permission: none
+          logging: 
+            - all
+      - process1:
+          user: 1000
+          permission: none
+          logging: 
+            - all
+      - process2:
+          user: 1000
+          permission: none
+          logging: 
+            - all
+      - process3:
           user: 1000
           perm: none
           log:
