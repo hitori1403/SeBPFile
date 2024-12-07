@@ -13,6 +13,7 @@
 #include "constants.h"
 #include "main.skel.h"
 
+#include "tpm2_utils.c"
 #include "fnv1a.c"
 
 struct proc_info {
@@ -257,7 +258,7 @@ int consume_event(struct yaml_parser_state *s, yaml_event_t *event)
 			if (s->last_file->process_list == NULL)
 				s->last_file->process_list = p;
 			else
-				s->last_file->process_list->next = p;
+				s->last_file->last_process->next = p;
 			s->last_file->last_process = p;
 			s->state = STATE_PROCESS_ATTRIBUTES;
 			break;
@@ -546,8 +547,8 @@ int load_keys(struct key_info *key_info_arr, const char *file_path)
 			break;
 
 		key_info_arr[cnt].hash = fnv1a((u8 *)filepath, strlen(filepath));
-		strncpy(key_info_arr[cnt].key, key, KEY_LENGTH_MAX);
-		strncpy(key_info_arr[cnt].nonce, strdup(nonce), KEY_LENGTH_MAX);
+		memcpy(key_info_arr[cnt].key, key, KEY_LENGTH_MAX);
+		memcpy(key_info_arr[cnt].nonce, strdup(nonce), KEY_LENGTH_MAX);
 		++cnt;
 	}
 
@@ -602,25 +603,21 @@ void write_key(struct key_info *saved, FILE *file, char *path, unsigned int key_
 	gen_bytes(saved->key, key_len);
 	gen_bytes(saved->nonce, nonce_len);
 	unsigned int path_len = strlen(path);
-
 	fwrite(&path_len, sizeof(char), sizeof(unsigned int), file);
 	fwrite(path, sizeof(char), path_len, file);
 	fwrite(&key_len, sizeof(char), sizeof(unsigned int), file);
 	fwrite(saved->key, sizeof(char), key_len, file);
 	fwrite(&nonce_len, sizeof(char), sizeof(unsigned int), file);
 	fwrite(saved->nonce, sizeof(char), nonce_len, file);
+	// exit(EXIT_FAILURE);
 }
 
 int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 {
-	if (!access(KEY_FILE, F_OK) == 0) {
-		FILE *file = fopen(KEY_FILE, "w");
-		if (file == NULL) {
-			perror("Error opening key file");
-			return EXIT_FAILURE;
-			fclose(file);
-		}
-	}
+	tpm2_decrypt();
+
+	if (!access(KEY_FILE, F_OK) == 0)
+		exit(EXIT_FAILURE);
 
 	struct key_info *key_info_arr = calloc(1024, sizeof(struct key_info));
 	unsigned int cnt_key = load_keys(key_info_arr, KEY_FILE);
@@ -673,7 +670,6 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 	for (struct file_entry *f = state->file_list; f; f = f->next) {
 		struct proc_info proc[MAX_PROCESSES_PER_FILE];
 		int i = 0;
-
 		for (struct process_entry *p = f->process_list; p; p = p->next) {
 			if (p->path)
 				strcpy(proc[i].path, p->path);
@@ -723,13 +719,13 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 
 		// TODO: using u128 for improved hash collision resistance
 		u64 path_hash = fnv1a((u8 *)f->path, strlen(f->path));
-		unsigned int search = binsearch(key_info_arr, cnt_key, path_hash);
+		int search = binsearch(key_info_arr, cnt_key, path_hash);
 
 		if (search == -1) {
 			write_key(new_key, key_file, f->path, 32, 12);
 		} else {
-			strncpy(new_key->key, key_info_arr[search].key, KEY_LENGTH_MAX);
-			strncpy(new_key->nonce, key_info_arr[search].nonce, KEY_LENGTH_MAX);
+			memcpy(new_key->key, key_info_arr[search].key, KEY_LENGTH_MAX);
+			memcpy(new_key->nonce, key_info_arr[search].nonce, KEY_LENGTH_MAX);
 		}
 		bpf_map__update_elem(skel->maps.map_path_rules, &path_hash, sizeof(path_hash),
 				     &proc, sizeof(proc), BPF_ANY);
@@ -739,13 +735,16 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 	}
 
 cleanup:
+	fclose(key_file);
+	fclose(input);
+	tpm2_gen_iv();
+	tpm2_encrypt();
+	system("shred keys");
+	system("rm keys");
 	free(new_key);
 	yaml_parser_delete(&parser);
 	free(state);
-	fclose(key_file);
-	fclose(input);
 	if (exit_code)
 		exit(exit_code);
-
 	return exit_code;
 }
