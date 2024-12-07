@@ -197,7 +197,7 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 			break;
 		}
 
-		struct cb_pathcmp_ctx cb_ctx = { (char *)procs[i].path, path_buf, 0 };
+		struct cb_pathcmp_ctx cb_ctx = { (char *)procs[i].path, proc_path, 0 };
 		bpf_loop(PATH_MAX, cb_pathcmp, &cb_ctx, 0);
 
 		if (cb_ctx.result)
