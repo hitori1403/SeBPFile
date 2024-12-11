@@ -17,7 +17,7 @@
 #include "fnv1a.c"
 
 struct proc_info {
-	u32 uid;
+	s32 uid;
 	u32 pid;
 	u32 ppid;
 	char cwd[PATH_MAX];
@@ -693,6 +693,8 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 					exit(EXIT_FAILURE);
 				}
 				proc[i].uid = pw->pw_uid;
+			} else {
+				proc[i].uid = -1;
 			}
 
 			proc[i].log = 0;

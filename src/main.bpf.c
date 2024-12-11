@@ -42,7 +42,7 @@ struct {
 } map_fd_info SEC(".maps");
 
 struct proc_info {
-	u32 uid;
+	s32 uid;
 	u32 pid;
 	u32 ppid;
 	const char cwd[PATH_MAX];
@@ -111,11 +111,16 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 		return 0;
 	}
 
+	u32 uid = bpf_get_current_uid_gid();
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
 	for (u32 i = 0; i < MAX_PROCESSES_PER_FILE; ++i) {
 		if (!procs[i].path[0]) {
 			break;
+		}
+
+		if (procs[i].uid >= 0 && procs[i].uid != uid) {
+			continue;
 		}
 
 		struct pathcmp_cb_ctx cb_ctx = { (char *)procs[i].path, proc_path, 0 };
