@@ -32,6 +32,7 @@ struct {
 struct fd_info {
 	u64 offset;
 	u64 path_hash;
+	u8 perm;
 };
 
 struct {
@@ -132,7 +133,7 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 		log(path_buf, procs[i].path, "ALLOW", "OPEN");
 
 		u64 pid_fd = (u64)pid << 32;
-		struct fd_info fdi = { 0, path_hash };
+		struct fd_info fdi = { 0, path_hash, procs[i].perm };
 
 		bpf_map_update_elem(&map_fd_info, &pid_fd, &fdi, BPF_ANY);
 		proc_path_mtx = 0;
@@ -192,7 +193,7 @@ int handle_exit_openat(struct trace_event_raw_sys_exit *ctx)
 	if (!fdi)
 		return 0;
 
-	u64 path_hash = fdi->path_hash;
+	struct fd_info transfer_fdi = { 0, fdi->path_hash, fdi->perm };
 
 	bpf_map_delete_elem(&map_fd_info, &pid_fd);
 
@@ -201,7 +202,6 @@ int handle_exit_openat(struct trace_event_raw_sys_exit *ctx)
 		return 0;
 
 	pid_fd |= fd;
-	struct fd_info transfer_fdi = { 0, path_hash };
 
 	bpf_map_update_elem(&map_fd_info, &pid_fd, &transfer_fdi, BPF_ANY);
 
@@ -259,6 +259,11 @@ int handle_enter_read(struct trace_event_raw_sys_enter *ctx)
 	if (!fdi)
 		return 0;
 
+	if (!(fdi->perm & 4)) {
+		bpf_printk("PID %d is not allowed to read", pid);
+		return 0;
+	}
+
 	struct transfer_state state = { fd, fdi->offset, (u8 *)ctx->args[1], 0, fdi->path_hash };
 	bpf_map_update_elem(&map_transfer_state, &pid, &state, BPF_ANY);
 
@@ -309,6 +314,11 @@ int handle_enter_write(struct trace_event_raw_sys_enter *ctx)
 	struct fd_info *fdi = bpf_map_lookup_elem(&map_fd_info, &pid_fd);
 	if (!fdi)
 		return 0;
+
+	if (!(fdi->perm & 2)) {
+		bpf_printk("PID %d is not allowed to write", pid);
+		return 0;
+	}
 
 	struct key_info *param = bpf_map_lookup_elem(&map_keys, &fdi->path_hash);
 	if (!param)

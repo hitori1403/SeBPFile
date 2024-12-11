@@ -683,8 +683,11 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 			if (p->ppid)
 				proc[i].ppid = p->ppid;
 
-			if (p->perm)
+			if (p->perm) {
 				proc[i].perm = perm_to_num(p->perm);
+			} else {
+				proc[i].perm = 7;
+			}
 
 			if (p->user) {
 				struct passwd *pw;
