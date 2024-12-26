@@ -120,6 +120,10 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 			break;
 		}
 
+		if (procs[i].pid >= 0 && procs[i].pid != pid) {
+			continue;
+		}
+
 		if (procs[i].uid >= 0 && procs[i].uid != uid) {
 			continue;
 		}
