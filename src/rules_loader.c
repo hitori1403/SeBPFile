@@ -18,8 +18,8 @@
 
 struct proc_info {
 	s32 uid;
-	u32 pid;
-	u32 ppid;
+	s32 pid;
+	s32 ppid;
 	char cwd[PATH_MAX];
 	char path[PATH_MAX];
 	u8 perm;
@@ -677,11 +677,17 @@ int load_rules_to_bpf_map(struct main_bpf *skel, const char *file_path)
 			if (p->cwd)
 				strcpy(proc[i].cwd, p->cwd);
 
-			if (p->pid)
+			if (p->pid) {
 				proc[i].pid = p->pid;
+			} else {
+				proc[i].pid = -1;
+			}
 
-			if (p->ppid)
+			if (p->ppid) {
 				proc[i].ppid = p->ppid;
+			} else {
+				proc[i].ppid = -1;
+			}
 
 			if (p->perm) {
 				proc[i].perm = perm_to_num(p->perm);

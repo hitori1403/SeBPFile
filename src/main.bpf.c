@@ -44,8 +44,8 @@ struct {
 
 struct proc_info {
 	s32 uid;
-	u32 pid;
-	u32 ppid;
+	s32 pid;
+	s32 ppid;
 	const char cwd[PATH_MAX];
 	const char path[PATH_MAX];
 	u8 perm;
