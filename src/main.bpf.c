@@ -237,15 +237,19 @@ int handle_exit_lseek(struct trace_event_raw_sys_exit *ctx)
 	if (!state)
 		return 0;
 
+	u64 pid_fd = (u64)pid << 32 | state->fd;
+
+	struct fd_info *fdi = bpf_map_lookup_elem(&map_fd_info, &pid_fd);
+	if (!fdi)
+		return 0;
+
 	if (ctx->ret < 0)
 		return 0;
 
 	u64 current_offset = ctx->ret;
-	u64 pid_fd = (u64)pid << 32 | state->fd;
-	struct fd_info fdi = { current_offset, state->path_hash };
+	struct fd_info new_fdi = { current_offset, state->path_hash, fdi->perm };
 
-	bpf_map_update_elem(&map_fd_info, &pid_fd, &fdi, BPF_EXIST);
-
+	bpf_map_update_elem(&map_fd_info, &pid_fd, &new_fdi, BPF_EXIST);
 	bpf_map_delete_elem(&map_transfer_state, &pid);
 
 	return 0;
@@ -287,6 +291,12 @@ int handle_exit_read(struct trace_event_raw_sys_exit *ctx)
 	if (!param)
 		return 0;
 
+	u64 pid_fd = (u64)pid << 32 | state->fd;
+
+	struct fd_info *fdi = bpf_map_lookup_elem(&map_fd_info, &pid_fd);
+	if (!fdi)
+		return 0;
+
 	u32 bytes_read = ctx->ret;
 	if (bytes_read <= 0)
 		goto cleanup;
@@ -296,10 +306,9 @@ int handle_exit_read(struct trace_event_raw_sys_exit *ctx)
 	chacha20_docrypt_user(state->buf, bytes_read, param->key, param->nonce, counter, skip);
 
 	state->offset += bytes_read;
-	struct fd_info fdi = { state->offset, state->path_hash };
 
-	u64 pid_fd = (u64)pid << 32 | state->fd;
-	bpf_map_update_elem(&map_fd_info, &pid_fd, &fdi, BPF_EXIST);
+	struct fd_info new_fdi = { state->offset, state->path_hash, fdi->perm };
+	bpf_map_update_elem(&map_fd_info, &pid_fd, &new_fdi, BPF_EXIST);
 
 cleanup:
 	bpf_map_delete_elem(&map_transfer_state, &pid);
@@ -356,6 +365,12 @@ int handle_exit_write(struct trace_event_raw_sys_exit *ctx)
 	if (!param)
 		return 0;
 
+	u64 pid_fd = (u64)pid << 32 | state->fd;
+
+	struct fd_info *fdi = bpf_map_lookup_elem(&map_fd_info, &pid_fd);
+	if (!fdi)
+		return 0;
+
 	u32 bytes_written = ctx->ret;
 	if (bytes_written <= 0)
 		goto cleanup;
@@ -365,10 +380,9 @@ int handle_exit_write(struct trace_event_raw_sys_exit *ctx)
 	chacha20_docrypt_user(state->buf, state->buf_sz, param->key, param->nonce, counter, skip);
 
 	state->offset += bytes_written;
-	struct fd_info fdi = { state->offset, state->path_hash };
 
-	u64 pid_fd = (u64)pid << 32 | state->fd;
-	bpf_map_update_elem(&map_fd_info, &pid_fd, &fdi, BPF_EXIST);
+	struct fd_info new_fdi = { state->offset, state->path_hash, fdi->perm };
+	bpf_map_update_elem(&map_fd_info, &pid_fd, &new_fdi, BPF_EXIST);
 
 cleanup:
 	bpf_map_delete_elem(&map_transfer_state, &pid);
