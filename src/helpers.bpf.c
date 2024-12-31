@@ -52,6 +52,8 @@ static int strrev_cb(u32 idx, struct strrev_cb_ctx *ctx)
 	return 0;
 }
 
+/* TODO: Handle mount points. For example, if /home is a separate partition,
+   this function will return the wrong path, /hitori/bocchi, instead of /home/hitori/bocchi. */
 static int get_d_path(char *buf, struct dentry *dentry)
 {
 	char *name;

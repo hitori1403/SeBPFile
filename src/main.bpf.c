@@ -173,6 +173,7 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 
 	// TODO: using u128 for improved hash collision resistance
 	/* u128 etc_passwd = __u128(0x1b1181c0cded9454, 0x60a4d74db663e357); */
+	// TODO: handle path traversal ./ ../ ../../
 	u64 path_hash = fnv1a_path(file_path);
 
 	struct proc_info *procs = bpf_map_lookup_elem(&map_path_rules, &path_hash);
