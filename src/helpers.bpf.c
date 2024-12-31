@@ -52,11 +52,10 @@ static int strrev_cb(u32 idx, struct strrev_cb_ctx *ctx)
 	return 0;
 }
 
-static int get_d_path(char *buf, struct task_struct *task)
+static int get_d_path(char *buf, struct dentry *dentry)
 {
 	char *name;
 	u16 buf_len = 0;
-	struct dentry *dentry = BPF_CORE_READ(task, mm, exe_file, f_path.dentry);
 
 	for (u32 i = 0; i < PATH_MAX / 2; ++i) {
 		bpf_core_read(&name, sizeof(name), &dentry->d_name.name);
@@ -66,7 +65,7 @@ static int get_d_path(char *buf, struct task_struct *task)
 
 		u16 len = bpf_probe_read_kernel_str(&buf[buf_len], NAME_MAX, name) - 1;
 
-		if (buf_len >= PATH_MAX || buf[buf_len] == '/') {
+		if (buf[buf_len] == '/') {
 			buf[buf_len] = 0; // remove last slash
 			break;
 		}
