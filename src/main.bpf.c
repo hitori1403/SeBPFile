@@ -225,11 +225,7 @@ int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
 	bpf_printk("file: %s, process: %s, pid: %d, BLOCK on OPEN operation", file_path,
 		   target_proc_path, pid);
 
-	/* TODO: handle SIGKILL 
-	 * There is a race condition in the get_proc_path invocation,
-	 * which could result in an incorrect process path.
-	 * Sending SIGKILL to the current process in this state may lead to unexpected behavior. */
-	/* bpf_send_signal(9); */
+	bpf_send_signal(9);
 
 mtx_cleanup:
 	target_proc_cwd_mtx = 0;
