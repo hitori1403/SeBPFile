@@ -103,7 +103,7 @@ struct {
 SEC("tp/syscalls/sys_enter_openat")
 int get_proc_path(struct trace_event_raw_sys_enter *ctx)
 {
-	if (target_proc_path_mtx)
+	if (target_proc_path_mtx && target_proc_pid)
 		return 0;
 
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
