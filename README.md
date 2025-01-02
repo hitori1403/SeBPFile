@@ -31,11 +31,12 @@ The name reflects the core focus of the project:
 2. Install dependencies:
 
    ```bash
-   sudo pacman -S clang gcc make tpm2-tools libyaml
+   sudo pacman -S --needed clang gcc make tpm2-tools libyaml
    ```
 
 3. Compile the project:
    ```bash
+   cd src
    make
    ```
 
