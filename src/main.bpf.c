@@ -44,8 +44,8 @@ struct {
 
 struct proc_info {
 	s32 uid;
-	u32 pid;
-	u32 ppid;
+	s32 pid;
+	s32 ppid;
 	const char cwd[PATH_MAX];
 	const char path[PATH_MAX];
 	u8 perm;
@@ -74,89 +74,19 @@ struct {
 
 const volatile int loader_pid = 0;
 
-char path_buf[PATH_MAX];
-
 // NOTE: Using smaller size in newer kernel version if possible
-/* char process_path[PATH_MAX + NAME_MAX]; */
-char proc_path[65536];
+/* char target_proc_cwd[PATH_MAX + NAME_MAX]; */
+char target_proc_cwd[65536];
+char target_proc_path[65536];
 
-int proc_path_mtx = 0;
+u32 target_proc_cwd_len = 0;
+u32 target_proc_pid = 0;
 
-SEC("tp/syscalls/sys_enter_openat")
-int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
-{
-	u32 pid = bpf_get_current_pid_tgid();
-	if (pid == loader_pid)
-		return 0;
+int target_proc_cwd_mtx = 0;
+int target_proc_path_mtx = 0;
 
-	if (!proc_path_mtx)
-		return 0;
-
-	// BUG: https://github.com/iovisor/bcc/issues/3175
-	s32 retval = bpf_probe_read_user_str(path_buf, PATH_MAX, (char *)ctx->args[1]);
-	if (retval < 0)
-		return 0;
-
-	// TODO: using u128 for improved hash collision resistance
-	/* u128 etc_passwd = __u128(0x1b1181c0cded9454, 0x60a4d74db663e357); */
-
-	u64 path_hash = fnv1a_path(path_buf);
-
-	struct proc_info *procs = bpf_map_lookup_elem(&map_path_rules, &path_hash);
-	if (!procs)
-		return 0;
-
-	struct key_info *param = bpf_map_lookup_elem(&map_keys, &path_hash);
-	if (!param) {
-		bpf_printk("Missing key & nonce for: %s", path_buf);
-		return 0;
-	}
-
-	u32 uid = bpf_get_current_uid_gid();
-	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-
-	for (u32 i = 0; i < MAX_PROCESSES_PER_FILE; ++i) {
-		if (!procs[i].path[0]) {
-			break;
-		}
-
-		if (procs[i].pid >= 0 && procs[i].pid != pid) {
-			continue;
-		}
-
-		if (procs[i].uid >= 0 && procs[i].uid != uid) {
-			continue;
-		}
-
-		struct pathcmp_cb_ctx cb_ctx = { (char *)procs[i].path, proc_path, 0 };
-		bpf_loop(PATH_MAX, pathcmp_cb, &cb_ctx, 0);
-
-		if (cb_ctx.result)
-			continue;
-
-		log(path_buf, procs[i].path, "ALLOW", "OPEN");
-
-		u64 pid_fd = (u64)pid << 32;
-		struct fd_info fdi = { 0, path_hash, procs[i].perm };
-
-		bpf_map_update_elem(&map_fd_info, &pid_fd, &fdi, BPF_ANY);
-		proc_path_mtx = 0;
-
-		return 0;
-	}
-
-	log(path_buf, proc_path, "BLOCK", "OPEN");
-
-	/* TODO: handle SIGKILL 
-	 * There is a race condition in the get_proc_path invocation,
-	 * which could result in an incorrect process path.
-	 * Sending SIGKILL to the current process in this state may lead to unexpected behavior. */
-	/* bpf_send_signal(9); */
-
-	proc_path_mtx = 0;
-
-	return 0;
-}
+int get_proc_cwd(struct trace_event_raw_sys_enter *ctx);
+int handle_enter_openat(struct trace_event_raw_sys_enter *ctx);
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
@@ -165,6 +95,7 @@ struct {
 	__array(values, int(void *));
 } map_progs SEC(".maps") = {
 	.values = {
+		[0] = (void *)&get_proc_cwd,
 		[1] = (void *)&handle_enter_openat,
 	},
 };
@@ -172,17 +103,135 @@ struct {
 SEC("tp/syscalls/sys_enter_openat")
 int get_proc_path(struct trace_event_raw_sys_enter *ctx)
 {
-	if (proc_path_mtx)
+	if (target_proc_path_mtx && target_proc_pid)
 		return 0;
 
-	/* NOTE: There is a race condition in the tail call from get_proc_path to handle_enter_openat.
-	 * 	The proc_path retrieved at the current time may not correspond to the intended process.
-	 * 	However, the issue is mitigated by multiple invocations, which still provide the correct path over time */
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-	get_d_path(proc_path, task);
-	proc_path_mtx = 1;
+	struct dentry *dentry = BPF_CORE_READ(task, mm, exe_file, f_path.dentry);
+
+	target_proc_pid = bpf_get_current_pid_tgid();
+
+	get_d_path(target_proc_path, dentry);
+	target_proc_path_mtx = 1;
+
+	bpf_tail_call(ctx, &map_progs, 0);
+
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_openat")
+int get_proc_cwd(struct trace_event_raw_sys_enter *ctx)
+{
+	if (!target_proc_path_mtx || target_proc_cwd_mtx)
+		return 0;
+
+	u32 pid = bpf_get_current_pid_tgid();
+	if (pid != target_proc_pid)
+		return 0;
+
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	struct dentry *dentry = BPF_CORE_READ(task, fs, pwd.dentry);
+
+	target_proc_cwd_len = get_d_path(target_proc_cwd, dentry);
+
+	target_proc_cwd[target_proc_cwd_len] = '/';
+	++target_proc_cwd_len;
+
+	target_proc_cwd_mtx = 1;
 
 	bpf_tail_call(ctx, &map_progs, 1);
+
+	return 0;
+}
+
+SEC("tp/syscalls/sys_enter_openat")
+int handle_enter_openat(struct trace_event_raw_sys_enter *ctx)
+{
+	// if both path isn't fully retrieved
+	if (!target_proc_path_mtx || !target_proc_cwd_mtx)
+		return 0;
+
+	u32 pid = bpf_get_current_pid_tgid();
+	if (pid == loader_pid || pid != target_proc_pid)
+		goto mtx_cleanup;
+
+	if (target_proc_cwd_len >= PATH_MAX)
+		return 0;
+
+	// BUG: https://github.com/iovisor/bcc/issues/3175
+	s32 retval = bpf_probe_read_user_str(target_proc_cwd + target_proc_cwd_len, PATH_MAX,
+					     (char *)ctx->args[1]);
+	if (retval < 0)
+		return 0;
+
+	if (target_proc_cwd_len >= PATH_MAX)
+		return 0;
+
+	char *file_path = target_proc_cwd;
+	if (target_proc_cwd[target_proc_cwd_len] == '/')
+		file_path += target_proc_cwd_len;
+
+	// TODO: using u128 for improved hash collision resistance
+	/* u128 etc_passwd = __u128(0x1b1181c0cded9454, 0x60a4d74db663e357); */
+	// TODO: handle path traversal ./ ../ ../../
+	u64 path_hash = fnv1a_path(file_path);
+
+	struct proc_info *procs = bpf_map_lookup_elem(&map_path_rules, &path_hash);
+	if (!procs)
+		return 0;
+
+	struct key_info *param = bpf_map_lookup_elem(&map_keys, &path_hash);
+	if (!param) {
+		bpf_printk("missing key & nonce for: %s", file_path);
+		return 0;
+	}
+
+	u32 uid = bpf_get_current_uid_gid();
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+	u32 ppid = BPF_CORE_READ(task, real_parent, pid);
+
+	for (u32 i = 0; i < MAX_PROCESSES_PER_FILE; ++i) {
+		if (!procs[i].path[0])
+			break;
+
+		if (procs[i].pid > 0 && procs[i].pid != pid)
+			continue;
+
+		if (procs[i].ppid > 0 && procs[i].ppid != ppid)
+			continue;
+
+		if (procs[i].uid >= 0 && procs[i].uid != uid)
+			continue;
+
+		struct pathcmp_cb_ctx cb_ctx = { (char *)procs[i].path, target_proc_path, 0 };
+		bpf_loop(PATH_MAX, pathcmp_cb, &cb_ctx, 0);
+
+		if (cb_ctx.result)
+			continue;
+
+		/* log(path_buf, procs[i].path, "ALLOW", "OPEN"); */
+		bpf_printk("file: %s, process: %s, pid: %d, ALLOW on OPEN operation", file_path,
+			   procs[i].path, pid);
+
+		u64 pid_fd = (u64)pid << 32;
+		struct fd_info fdi = { 0, path_hash, procs[i].perm };
+
+		bpf_map_update_elem(&map_fd_info, &pid_fd, &fdi, BPF_ANY);
+
+		goto mtx_cleanup;
+	}
+
+	/* log(path_buf, proc_path, "BLOCK", "OPEN"); */
+	bpf_printk("file: %s, process: %s, pid: %d, BLOCK on OPEN operation", file_path,
+		   target_proc_path, pid);
+
+	bpf_send_signal(9);
+
+mtx_cleanup:
+	target_proc_cwd_mtx = 0;
+	target_proc_path_mtx = 0;
+	target_proc_pid = 0;
 
 	return 0;
 }
@@ -194,16 +243,20 @@ int handle_exit_openat(struct trace_event_raw_sys_exit *ctx)
 	u64 pid_fd = (u64)pid << 32;
 
 	struct fd_info *fdi = bpf_map_lookup_elem(&map_fd_info, &pid_fd);
-	if (!fdi)
+	if (!fdi) {
+		/* bpf_printk("[sys_exit_openat] pid %d, missing fd info", pid); */
 		return 0;
+	}
 
 	struct fd_info transfer_fdi = { 0, fdi->path_hash, fdi->perm };
 
 	bpf_map_delete_elem(&map_fd_info, &pid_fd);
 
 	u32 fd = ctx->ret;
-	if (fd <= 0)
+	if (fd <= 0) {
+		bpf_printk("[sys_exit_openat] pid %d, ret <= 0", pid);
 		return 0;
+	}
 
 	pid_fd |= fd;
 
@@ -220,8 +273,10 @@ int handle_enter_lseek(struct trace_event_raw_sys_enter *ctx)
 	u64 pid_fd = (u64)pid << 32 | fd;
 
 	struct fd_info *fdi = bpf_map_lookup_elem(&map_fd_info, &pid_fd);
-	if (!fdi)
+	if (!fdi) {
+		/* bpf_printk("[sys_enter_lseek] pid %d, missing fd info", pid); */
 		return 0;
+	}
 
 	struct transfer_state state = { fd, 0, 0, 0, fdi->path_hash };
 	bpf_map_update_elem(&map_transfer_state, &pid, &state, BPF_ANY);
@@ -234,17 +289,23 @@ int handle_exit_lseek(struct trace_event_raw_sys_exit *ctx)
 {
 	u32 pid = bpf_get_current_pid_tgid();
 	struct transfer_state *state = bpf_map_lookup_elem(&map_transfer_state, &pid);
-	if (!state)
+	if (!state) {
+		/* bpf_printk("[sys_exit_lseek] pid %d, missing transfer state", pid); */
 		return 0;
+	}
 
 	u64 pid_fd = (u64)pid << 32 | state->fd;
 
 	struct fd_info *fdi = bpf_map_lookup_elem(&map_fd_info, &pid_fd);
-	if (!fdi)
+	if (!fdi) {
+		bpf_printk("[sys_exit_lseek] pid %d, missing fd info", pid);
 		return 0;
+	}
 
-	if (ctx->ret < 0)
+	if (ctx->ret < 0) {
+		bpf_printk("[sys_exit_lseek] pid %d, missing ret < 0", pid);
 		return 0;
+	}
 
 	u64 current_offset = ctx->ret;
 	struct fd_info new_fdi = { current_offset, state->path_hash, fdi->perm };
@@ -264,11 +325,13 @@ int handle_enter_read(struct trace_event_raw_sys_enter *ctx)
 	u64 pid_fd = (u64)pid << 32 | fd;
 
 	struct fd_info *fdi = bpf_map_lookup_elem(&map_fd_info, &pid_fd);
-	if (!fdi)
+	if (!fdi) {
+		/* bpf_printk("[sys_enter_read] pid %d, missing fd info", pid); */
 		return 0;
+	}
 
 	if (!(fdi->perm & 4)) {
-		bpf_printk("PID %d is not allowed to read", pid);
+		bpf_printk("pid %d is not allowed to read", pid);
 		return 0;
 	}
 
@@ -284,22 +347,30 @@ int handle_exit_read(struct trace_event_raw_sys_exit *ctx)
 	u32 pid = bpf_get_current_pid_tgid();
 
 	struct transfer_state *state = bpf_map_lookup_elem(&map_transfer_state, &pid);
-	if (!state)
+	if (!state) {
+		/* bpf_printk("[sys_exit_read] pid %d, missing transfer state", pid); */
 		return 0;
+	}
 
 	struct key_info *param = bpf_map_lookup_elem(&map_keys, &state->path_hash);
-	if (!param)
+	if (!param) {
+		bpf_printk("[sys_exit_read] pid %d, missing chacha20 params", pid);
 		return 0;
+	}
 
 	u64 pid_fd = (u64)pid << 32 | state->fd;
 
 	struct fd_info *fdi = bpf_map_lookup_elem(&map_fd_info, &pid_fd);
-	if (!fdi)
+	if (!fdi) {
+		bpf_printk("[sys_exit_read] pid %d, missing fd info", pid);
 		return 0;
+	}
 
 	u32 bytes_read = ctx->ret;
-	if (bytes_read <= 0)
+	if (bytes_read <= 0) {
+		bpf_printk("[sys_exit_read] pid %d, bytes read <= 0", pid);
 		goto cleanup;
+	}
 
 	u32 counter = (state->offset + 63) >> 6;
 	u8 skip = state->offset % 64;
@@ -325,21 +396,27 @@ int handle_enter_write(struct trace_event_raw_sys_enter *ctx)
 	u64 pid_fd = (u64)pid << 32 | fd;
 
 	struct fd_info *fdi = bpf_map_lookup_elem(&map_fd_info, &pid_fd);
-	if (!fdi)
+	if (!fdi) {
+		/* bpf_printk("[sys_enter_write] pid %d, missing fd info", pid); */
 		return 0;
+	}
 
 	if (!(fdi->perm & 2)) {
-		bpf_printk("PID %d is not allowed to write", pid);
+		bpf_printk("pid %d is not allowed to write", pid);
 		return 0;
 	}
 
 	struct key_info *param = bpf_map_lookup_elem(&map_keys, &fdi->path_hash);
-	if (!param)
+	if (!param) {
+		bpf_printk("[sys_enter_write] pid %d, missing chacha20 params", pid);
 		return 0;
+	}
 
 	u32 count = ctx->args[2];
-	if (count <= 0)
+	if (count <= 0) {
+		bpf_printk("[sys_enter_write] pid %d, count <= 0", pid);
 		return 0;
+	}
 
 	struct transfer_state state = { fd, fdi->offset, (u8 *)ctx->args[1], count,
 					fdi->path_hash };
@@ -358,22 +435,30 @@ int handle_exit_write(struct trace_event_raw_sys_exit *ctx)
 	u32 pid = bpf_get_current_pid_tgid();
 
 	struct transfer_state *state = bpf_map_lookup_elem(&map_transfer_state, &pid);
-	if (!state)
+	if (!state) {
+		/* bpf_printk("[sys_exit_write] pid %d, missing transfer state", pid); */
 		return 0;
+	}
 
 	struct key_info *param = bpf_map_lookup_elem(&map_keys, &state->path_hash);
-	if (!param)
+	if (!param) {
+		bpf_printk("[sys_exit_write] pid %d, missing chacha20 params", pid);
 		return 0;
+	}
 
 	u64 pid_fd = (u64)pid << 32 | state->fd;
 
 	struct fd_info *fdi = bpf_map_lookup_elem(&map_fd_info, &pid_fd);
-	if (!fdi)
+	if (!fdi) {
+		bpf_printk("[sys_exit_write] pid %d, missing fd info", pid);
 		return 0;
+	}
 
 	u32 bytes_written = ctx->ret;
-	if (bytes_written <= 0)
+	if (bytes_written <= 0) {
+		bpf_printk("[sys_exit_write] pid %d, bytes written <= 0", pid);
 		goto cleanup;
+	}
 
 	u32 counter = (state->offset + 63) >> 6;
 	u8 skip = state->offset % 64;
