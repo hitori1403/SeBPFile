@@ -1,6 +1,6 @@
 # SeBPFile
 
-**SeBPFile** (pronounced **Seb-file**) is an eBPF-based security solution that uses TPM2 (Trusted Platform Module 2.0) for enhanced protection of secret files. It combines real-time monitoring via eBPF, transparent encryption using ChaCha20, and access control to ensure sensitive data is protected from unauthorized access, even in scenarios involving physical access to the system.
+**SeBPFile** (pronounced **Seb-file**) is an eBPF-based security solution that uses TPM2 (Trusted Platform Module 2.0) for enhanced protection of secret files. It combines real-time monitoring via eBPF, transparent encryption using ChaCha20, and access control to ensure sensitive data is protected from unauthorized access, even in scenarios involving physical threats like storage devices being leaked or stolen.
 
 ### Why the name **SeBPFile**?
 
@@ -16,7 +16,7 @@ The name reflects the core focus of the project:
 - **ChaCha20 Encryption**: Implements ChaCha20 encryption to securely encrypt files at rest, offering a fast and secure encryption method.
 - **Transparent Encryption**: Automatically encrypts and decrypts files without requiring user intervention, providing seamless protection.
 - **TPM2 Integration**: Leverages TPM2 for secure key storage and management, ensuring that encryption keys are securely stored in hardware, preventing extraction.
-- **Physical Access Protection**: Prevents data leaks even in the case of physical access to the machine, similar to LUKS encryption, by using TPM2 for key management.
+- **Physical Threat Mitigation**: Protects sensitive data against physical threats, such as stolen or leaked storage devices, by combining TPM2-based key management with robust encryption.
 - **Simple Access Control**: Defines file access policies to restrict access based on user, process, or context.
 
 ## Installation (Arch Linux)
@@ -44,7 +44,7 @@ The name reflects the core focus of the project:
 
 SeBPFile operates by hooking into file-related syscalls such as `open`, `read`, `write`, and `lseek`. When these syscalls are invoked, SeBPFile intercepts them and performs encryption or decryption operations before the data is either stored to disk or given to the application. This approach ensures that the file contents are always encrypted at rest, and only authorized processes can access the decrypted content based on the defined access control policies.
 
-The encryption uses the ChaCha20 algorithm for its speed and security, while TPM2 is employed for secure key management, ensuring the keys are never exposed to unauthorized parties, even during physical access to the system.
+The encryption leverages the ChaCha20 algorithm for its exceptional speed and robust security, while TPM2 ensures secure key management by keeping encryption keys protected within hardware, preventing exposure to unauthorized parties—even in scenarios where storage devices are leaked or stolen.
 
 ## Usage
 
