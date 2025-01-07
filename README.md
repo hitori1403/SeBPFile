@@ -16,7 +16,7 @@ The name reflects the core focus of the project:
 - **ChaCha20 Encryption**: Implements ChaCha20 encryption to securely encrypt files at rest, offering a fast and secure encryption method.
 - **Transparent Encryption**: Automatically encrypts and decrypts files without requiring user intervention, providing seamless protection.
 - **TPM2 Integration**: Leverages TPM2 for secure key storage and management, ensuring that encryption keys are securely stored in hardware.
-- **Physical Threat Mitigation**: Protects sensitive data against physical threats, such as stolen or leaked storage devices, by combining TPM2-based key management with robust encryption.
+- **Physical Threat Mitigation**: Protects sensitive data against physical devices theft, such as stolen or leaked storage devices, by combining TPM2-based key management with robust encryption.
 - **Simple Access Control**: Defines file access policies to restrict access based on user, process, or context.
 
 ## Installation (Arch Linux)
